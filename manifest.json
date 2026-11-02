@@ -1,9 +1,12 @@
 {
-  "name": "株ウォッチ",
-  "short_name": "株ウォッチ",
+  "name": "KabuWatch",
+  "short_name": "KabuWatch",
   "start_url": "./",
   "display": "standalone",
   "background_color": "#f5f6f4",
   "theme_color": "#0f766e",
-  "icons": [{ "src": "icon.png", "sizes": "180x180", "type": "image/png" }]
+  "icons": [
+    { "src": "icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
 }
