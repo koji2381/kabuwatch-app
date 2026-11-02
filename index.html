@@ -8,8 +8,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="KabuWatch">
 <meta name="theme-color" content="#0f766e">
-<link rel="apple-touch-icon" href="icon.png">
-<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon_v2.png">
+<link rel="manifest" href="manifest.json?v=2">
 <title>KabuWatch</title>
 <!--
   kabu_watch の iPhone 用画面。GitHub API で data/state.json を読み、
@@ -92,6 +92,43 @@ const store = {
 };
 let cfg = { repo: store.get("kw_repo", "koji2381/KabuWatch"), token: store.get("kw_token", "") };
 
+// トークンを消えにくくする：localStorage と IndexedDB の両方に保存し、ブラウザで開いているときは
+// アドレスの # 以降にも入れておく（# 以降はサーバーに送られない）。この状態で「ホーム画面に追加」すると
+// アイコンのアドレスにトークンが含まれ、iPhone が保存データを消しても次に開いたとき自動で戻る。
+const standalone = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+function hashToken() {
+  const m = location.hash.match(/[#&]k=([^&]+)/);
+  try { return m ? atob(decodeURIComponent(m[1])) : ""; } catch { return ""; }
+}
+function setHashToken(t) {
+  try { history.replaceState(null, "", location.pathname + location.search + (t ? "#k=" + encodeURIComponent(btoa(t)) : "")); } catch {}
+}
+function idb(mode, value) {
+  return new Promise(resolve => {
+    try {
+      const rq = indexedDB.open("kabuwatch", 1);
+      rq.onupgradeneeded = () => rq.result.createObjectStore("kv");
+      rq.onerror = () => resolve("");
+      rq.onsuccess = () => {
+        const st = rq.result.transaction("kv", mode === "get" ? "readonly" : "readwrite").objectStore("kv");
+        const r = mode === "get" ? st.get("token") : st.put(value, "token");
+        r.onsuccess = () => resolve(mode === "get" ? (r.result || "") : true);
+        r.onerror = () => resolve("");
+      };
+    } catch { resolve(""); }
+  });
+}
+async function saveToken(t) {
+  store.set("kw_token", t);
+  await idb("put", t);
+  if (!standalone) setHashToken(t);  // ホーム画面のアプリ内ではアドレスを書き換えない
+  try { await navigator.storage?.persist?.(); } catch {}
+}
+async function restoreToken() {
+  const t = cfg.token || hashToken() || await idb("get");
+  if (t) { cfg.token = t; await saveToken(t); }
+}
+
 function el(tag, attrs = {}, ...kids) {
   const e = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -124,9 +161,10 @@ async function dispatch(workflow, inputs) {
 function openSetup() { $("#repo").value = cfg.repo; $("#token").value = cfg.token; $("#setup").showModal(); }
 $("#gear").onclick = openSetup;
 $("#setupCancel").onclick = () => $("#setup").close();
-$("#setupSave").onclick = () => {
+$("#setupSave").onclick = async () => {
   cfg.repo = $("#repo").value.trim(); cfg.token = $("#token").value.trim();
-  store.set("kw_repo", cfg.repo); store.set("kw_token", cfg.token); $("#setup").close(); load();
+  store.set("kw_repo", cfg.repo); await saveToken(cfg.token); $("#setup").close(); load();
+  if (!standalone && cfg.token) toast("保存しました。このまま「ホーム画面に追加」すると、次からトークンの入力は不要です", 7000);
 };
 $("#reload").onclick = () => load();
 
@@ -234,7 +272,7 @@ async function load() {
   } finally { $("#reload").disabled = false; }
 }
 document.addEventListener("visibilitychange", () => { if (!document.hidden && cfg.token) load(); });
-load();
+restoreToken().then(load);
 </script>
 </body>
 </html>
