@@ -88,7 +88,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
-const APP_VERSION = "1.6.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
+const APP_VERSION = "1.7.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -310,7 +310,9 @@ function render(s, opt, runs, logText) {
   let evalText = "";
   if (s.started) {
     let n = 1; for (let d = day(s.started); d < (s.last_bar ? day(s.last_bar) : today); d = nextTrading(d)) n++;
-    evalText = `評価期間：${md(day(s.started))} 開始・${Math.min(n, 20)}／20日目${n > 20 ? "（終了）" : ""}`;
+    const nd = s.eval?.need_days || 20, mt = s.eval?.min_trades || 5;
+    evalText = `評価期間：${md(day(s.started))} 開始・${n <= nd ? n + "／" + nd + "日目" : n + "日目（" + (s.report_sent ? "終了" : "継続中") + "）"}` +
+      `・仮想取引 ${closed.length}／${mt}回`;
   }
   app.append(section("🧾 成績",
     evalText ? el("div", { class: "small", style: "margin-bottom:6px" }, evalText) : null,
@@ -336,7 +338,8 @@ function render(s, opt, runs, logText) {
     log.length ? el("div", { class: "small", style: "margin-top:8px" }, "この iPhone から送った操作：" + log.slice(0, 3).map(l => l.cmd).join("、")) : null,
     el("div", { style: "margin-top:10px;display:flex;gap:8px;flex-wrap:wrap" },
       el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_intraday.yml"); toast("急変チェックを始めました（急変があれば Discord に届きます）"); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "今すぐ急変チェック"),
-      el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_morning.yml"); toast("朝の通知をもう一度送ります（1〜2分で Discord に届きます。休場日は届きません）", 5000); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "朝の通知をもう一度"))));
+      el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch.yml", { command: "auto" }); toast("引け後レポートを始めました（数分で Discord に届きます。新しい日足が無ければ何も届きません）", 6000); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "引け後レポートを今すぐ"),
+      el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_morning.yml"); toast("朝の通知を起動しました（6〜9時に、その日1回だけ届きます。休場日は届きません）", 5000); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "朝の通知を起動"))));
 
   // 改修記録（直近3回分）
   const logs = parseLog(logText);
