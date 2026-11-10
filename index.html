@@ -88,7 +88,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
-const APP_VERSION = "1.5.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
+const APP_VERSION = "1.6.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -306,7 +306,14 @@ function render(s, opt, runs, logText) {
   const winRate = a => a.length ? `・勝率${Math.round(a.filter(x => x.pnl > 0).length / a.length * 100)}%` : "";
   const paperPos = Object.keys(s.paper?.positions || {}), paperOrd = Object.keys(s.paper?.orders || {});
   const t = opt?.test;
+  // 評価期間：開始日から数えて何営業日目か（休場日は数えない）
+  let evalText = "";
+  if (s.started) {
+    let n = 1; for (let d = day(s.started); d < (s.last_bar ? day(s.last_bar) : today); d = nextTrading(d)) n++;
+    evalText = `評価期間：${md(day(s.started))} 開始・${Math.min(n, 20)}／20日目${n > 20 ? "（終了）" : ""}`;
+  }
   app.append(section("🧾 成績",
+    evalText ? el("div", { class: "small", style: "margin-bottom:6px" }, evalText) : null,
     el("div", { class: "kv" }, el("span", {}, `実際の売買（${sold.length}回${winRate(sold)}）`), pnlSpan(sum(sold))),
     el("div", { class: "kv" }, el("span", {}, `仮想売買（${closed.length}回${winRate(closed)}）`), pnlSpan(sum(closed))),
     paperPos.length || paperOrd.length ? el("div", { class: "small" },
@@ -315,6 +322,7 @@ function render(s, opt, runs, logText) {
       el("div", {}, `自動検証（${opt.updated}）：${opt.trade_ok ? "🟢 合格" : "🔴 不合格"}`),
       t ? el("div", { class: "small" }, `選ぶときに使っていない期間（${opt.test_period}）で ${(t.total_ret * 100 >= 0 ? "+" : "") + (t.total_ret * 100).toFixed(1)}%・` +
         `最大下落 ${(t.max_dd * 100).toFixed(1)}%・${Math.round(t.trades || 0)}回`) : null,
+      opt.folds_total ? el("div", { class: "small" }, `期間を${opt.folds_total}つに区切った検証で、${opt.folds_positive}区間がプラス`) : null,
       el("div", { class: "small" }, "過去の成績で、将来の利益を保証するものではありません。")) : null));
 
   // 操作と実行状況
