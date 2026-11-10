@@ -36,7 +36,7 @@ h2{font-size:15px;margin:0 0 8px;color:var(--sub);font-weight:600}
 .grow{flex:1;min-width:0}
 .name{font-weight:600}
 .small{font-size:13px;color:var(--sub)}
-.up{color:var(--green)}.dn{color:var(--red)}
+.up,.small.up{color:var(--green)}.dn,.small.dn{color:var(--red)}
 button{font:inherit;border-radius:10px;border:1px solid var(--line);background:var(--chip);color:var(--ink);padding:8px 14px;min-height:40px}
 button.pri{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:600}
 button:disabled{opacity:.5}
@@ -45,6 +45,10 @@ input{font:inherit;width:100%;padding:10px 12px;border:1px solid var(--line);bor
 label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px}
 .note{background:var(--warn-bg);color:var(--warn);border-radius:10px;padding:10px 12px;font-size:14px;margin-top:10px}
 .empty{color:var(--sub);font-size:14px;padding:4px 0}
+.info{background:var(--chip);border-radius:10px;padding:10px 12px;font-size:14px;margin-top:10px}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:14px}
+.kv span:first-child{color:var(--sub)}
+.big{font-size:17px;font-weight:700}
 .chip{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;background:var(--chip);color:var(--sub);margin-left:4px}
 dialog{border:0;border-radius:16px;padding:18px;width:min(92vw,420px);background:var(--card);color:var(--ink)}
 dialog::backdrop{background:rgba(0,0,0,.45)}
@@ -84,6 +88,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
+const APP_VERSION = "1.5.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -153,6 +158,22 @@ async function readJson(path) {
   try { return JSON.parse(await gh(`/repos/${cfg.repo}/contents/${path}?ref=main&t=${Date.now()}`, { raw: true })); }
   catch (e) { if (String(e.message).includes("404")) return null; throw e; }
 }
+async function readText(path) {
+  try { return await gh(`/repos/${cfg.repo}/contents/${path}?ref=main&t=${Date.now()}`, { raw: true }); } catch { return ""; }
+}
+// 改修記録（CHANGELOG.md）から直近の n 回分を取り出す：「## v1.5.0（2026-11-10）」の見出しと、その下の「- 」の行
+function parseLog(text, n = 3) {
+  const out = [];
+  for (const line of (text || "").split(/\r?\n/)) {
+    const h = line.match(/^## (v[\d.]+)（(.+?)）/);
+    if (h) { if (out.length >= n) break; out.push({ ver: h[1], date: h[2], items: [] }); }
+    else if (out.length && /^- /.test(line)) out.at(-1).items.push(line.slice(2));
+    else if (out.length && /^  +\S/.test(line) && out.at(-1).items.length) out.at(-1).items[out.at(-1).items.length - 1] += line.trim();
+  }
+  return out;
+}
+const newer = (a, b) => { const x = a.split(".").map(Number), y = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
 async function dispatch(workflow, inputs) {
   await gh(`/repos/${cfg.repo}/actions/workflows/${workflow}/dispatches`, { method: "POST",
     body: JSON.stringify({ ref: "main", ...(inputs ? { inputs } : {}) }) });
@@ -195,17 +216,52 @@ $("#tOk").onclick = async () => {
   } catch (e) { toast(e.message, 6000); } finally { $("#tOk").disabled = false; }
 };
 
+// 休場日：土日 ＋ 祝日（data/holidays.json）＋ 年末年始（12/31〜1/3）。プログラム側（calendar_jp.py）と同じ決まり
+let HOL = new Set();
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+const day = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const md = d => `${d.getMonth() + 1}/${d.getDate()}（${"日月火水木金土"[d.getDay()]}）`;
+function closedReason(d) {
+  if (d.getDay() === 0 || d.getDay() === 6) return "土日";
+  if (["12-31", "1-1", "1-2", "1-3"].includes(`${d.getMonth() + 1}-${d.getDate()}`)) return "年末年始";
+  return HOL.has(iso(d)) ? "祝日" : "";
+}
+function nextTrading(d) { do { d = addDays(d, 1); } while (closedReason(d)); return d; }
+function lastTrading(d) { while (closedReason(d)) d = addDays(d, -1); return d; }
+const pct = (a, b) => `${a >= b ? "+" : ""}${((a / b - 1) * 100).toFixed(0)}%`;
+
 function section(title, ...kids) { return el("section", {}, el("h2", {}, title), ...kids); }
 
-function render(s, opt, runs) {
+function render(s, opt, runs, logText) {
   const app = $("#app"); app.replaceChildren();
   const names = {};
   for (const c of s.cohorts || []) for (const x of c.picks) names[x.code] = x.name;
   for (const [c, h] of Object.entries(s.holdings || {})) names[c] = h.name || names[c] || "";
 
-  const upd = el("div", { class: "small", style: "margin-top:10px" }, `最新の日足：${s.last_bar || "まだありません"}`);
-  app.append(upd);
+  // 今日の状況（休場日・次の取引日・相場・日足の鮮度）
+  const now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const why = closedReason(today), plan = s.plan || {};
+  const orderDay = s.last_bar ? nextTrading(day(s.last_bar)) : null;   // 買い候補・保有の注文を出す日
+  const status = [];
+  status.push(el("div", { class: "big" }, why ? `今日は休場日です（${why}）` : `${md(today)} 取引日`));
+  if (why) status.push(el("div", { class: "small" }, `次の取引日は ${md(nextTrading(today))}`));
+  if (plan.market) status.push(el("div", { style: "margin-top:6px" }, plan.market));
+  status.push(el("div", { class: "small", style: "margin-top:6px" }, `最新の日足：${s.last_bar || "まだありません"}`));
+  app.append(el("section", {}, ...status));
+  // 引け後の処理（17:47ごろ）が済んでいるはずの日足より古ければ知らせる
+  const expect = lastTrading(now.getHours() >= 19 && !why ? today : addDays(today, -1));
+  if (s.last_bar && day(s.last_bar) < expect) app.append(el("div", { class: "note" },
+    `最新の日足が ${md(day(s.last_bar))} のままです（${md(expect)} の分が届いていません）。下の「クラウドの実行状況」を確認してください。`));
   if (opt && !opt.trade_ok) app.append(el("div", { class: "note" }, "自動検証で今のルールは成績がマイナスです。買い候補は参考表示のみです（実際の購入は見送り推奨）。"));
+
+  const pnlSpan = n => el("span", { class: n >= 0 ? "up" : "dn" }, `${n >= 0 ? "+" : ""}${Math.round(n).toLocaleString()}円`);
+  const halfMode = (opt?.params?.exit_mode || "half_trail") === "half_trail";
+  const tpText = h => {   // 通知と同じ言い方：半分利確のときは株数も出す
+    if (h.half_done) return "利確済み（残りは逆指値で追いかけ）";
+    const half = Math.floor(h.shares / 2 / 100) * 100;
+    return halfMode && half ? `利確指値 ${yen(h.target)}（${half.toLocaleString()}株＝半分）` : `利確指値 ${yen(h.target)}（全株）`;
+  };
 
   // 保有
   const hold = Object.entries(s.holdings || {});
@@ -214,19 +270,27 @@ function render(s, opt, runs) {
       el("div", { class: "grow" },
         el("div", { class: "name" }, `${c} ${h.name || ""}`),
         el("div", { class: "small" }, `買値 ${yen(h.fill)} × ${h.shares.toLocaleString()}株（${h.date}〜）`),
-        el("div", { class: "small" }, `利確 ${h.half_done ? "済み" : yen(h.target)}　`, el("span", { class: "dn" }, `逆指値 ${yen(h.stop)}`),
-          h.exit_next ? el("span", { class: "chip" }, `明日売り：${h.exit_next}`) : null)),
+        h.last ? el("div", {}, `終値 ${yen(h.last)}　`, pnlSpan((h.last - h.fill) * h.shares),
+          el("span", { class: "small" }, `（${pct(h.last, h.fill)}）`)) : null,
+        h.exit_next
+          ? el("div", { class: "dn", style: "font-weight:600" }, `${orderDay ? md(orderDay) : "次の取引日"}の寄付で成行売り（${h.exit_next}）`)
+          : [el("div", { class: "small" }, tpText(h)), el("div", { class: "small dn" }, `逆指値 ${yen(h.stop)}（全株）`)]),
       el("button", { onclick: () => openTrade("sell", c, "値段・株数を空欄にすると、終値で全株売ったことになります") }, "売った")))
       : el("div", { class: "empty" }, "保有の記録はありません")));
 
   // 今日の買い候補
   const sug = Object.entries(s.suggest || {});
-  app.append(section(`🔔 今日の買い候補（${sug.length}）`,
+  const blocks = plan.blocks || [];
+  app.append(section(`🔔 買い候補（${sug.length}）${orderDay ? "　" + md(orderDay) + " の注文" : ""}`,
+    blocks.length ? el("div", { class: "info" }, `🔕 新規の買いは見送り：${blocks.join("・")}`) : null,
     sug.length ? sug.map(([c, x]) => el("div", { class: "row" },
-      el("div", { class: "grow" }, el("div", { class: "name" }, `${c} ${names[c] || ""}`),
-        el("div", { class: "small" }, `指値 ${yen(x.entry)} × ${x.qty.toLocaleString()}株（約${yen(x.entry * x.qty)}）`)),
+      el("div", { class: "grow" },
+        el("div", { class: "name" }, `${c} ${x.name || names[c] || ""}`, x.signal ? el("span", { class: "chip" }, x.signal) : null),
+        el("div", {}, `指値 ${yen(x.entry)} × ${x.qty.toLocaleString()}株`, el("span", { class: "small" }, `（約${yen(x.entry * x.qty)}）`)),
+        x.target && x.stop ? [el("div", { class: "small up" }, `利確 ${yen(x.target)}（${pct(x.target, x.entry)}）`),
+          el("div", { class: "small dn" }, `逆指値 ${yen(x.stop)}（${pct(x.stop, x.entry)}・損失 約${yen((x.entry - x.stop) * x.qty)}）`)] : null),
       el("button", { class: "pri", onclick: () => openTrade("buy", c, "値段・株数を空欄にすると、通知の指値・株数で記録します") }, "買った")))
-      : el("div", { class: "empty" }, "なし（無理に買わないのも戦略です）"),
+      : (blocks.length ? null : el("div", { class: "empty" }, "なし（無理に買わないのも戦略です）")),
     el("div", { style: "margin-top:10px" }, el("button", { onclick: () => openTrade("buy", "", "候補以外の銘柄を買ったときはこちら") }, "＋ ほかの銘柄を買った"))));
 
   // 今週の5銘柄
@@ -239,11 +303,19 @@ function render(s, opt, runs) {
   // 成績
   const closed = s.paper?.closed || [], sold = s.sold || [];
   const sum = a => a.reduce((t, x) => t + x.pnl, 0);
-  const pnlSpan = n => el("span", { class: n >= 0 ? "up" : "dn" }, `${n >= 0 ? "+" : ""}${Math.round(n).toLocaleString()}円`);
+  const winRate = a => a.length ? `・勝率${Math.round(a.filter(x => x.pnl > 0).length / a.length * 100)}%` : "";
+  const paperPos = Object.keys(s.paper?.positions || {}), paperOrd = Object.keys(s.paper?.orders || {});
+  const t = opt?.test;
   app.append(section("🧾 成績",
-    el("div", {}, `仮想売買：${closed.length}回　`, pnlSpan(sum(closed))),
-    el("div", {}, `実際の売買：${sold.length}回　`, pnlSpan(sum(sold))),
-    opt ? el("div", { class: "small", style: "margin-top:6px" }, `自動検証（${opt.updated}）：${opt.trade_ok ? "🟢合格" : "🔴不合格"}`) : null));
+    el("div", { class: "kv" }, el("span", {}, `実際の売買（${sold.length}回${winRate(sold)}）`), pnlSpan(sum(sold))),
+    el("div", { class: "kv" }, el("span", {}, `仮想売買（${closed.length}回${winRate(closed)}）`), pnlSpan(sum(closed))),
+    paperPos.length || paperOrd.length ? el("div", { class: "small" },
+      [paperPos.length ? `仮想で保有中：${paperPos.join("、")}` : "", paperOrd.length ? `仮想の買い注文中：${paperOrd.join("、")}` : ""].filter(Boolean).join("　")) : null,
+    opt ? el("div", { class: "info" },
+      el("div", {}, `自動検証（${opt.updated}）：${opt.trade_ok ? "🟢 合格" : "🔴 不合格"}`),
+      t ? el("div", { class: "small" }, `選ぶときに使っていない期間（${opt.test_period}）で ${(t.total_ret * 100 >= 0 ? "+" : "") + (t.total_ret * 100).toFixed(1)}%・` +
+        `最大下落 ${(t.max_dd * 100).toFixed(1)}%・${Math.round(t.trades || 0)}回`) : null,
+      el("div", { class: "small" }, "過去の成績で、将来の利益を保証するものではありません。")) : null));
 
   // 操作と実行状況
   const log = JSON.parse(store.get("kw_log", "[]"));
@@ -255,18 +327,33 @@ function render(s, opt, runs) {
       el("a", { href: r.html_url, target: "_blank", rel: "noopener" }, "詳細"))) : el("div", { class: "empty" }, "まだありません"),
     log.length ? el("div", { class: "small", style: "margin-top:8px" }, "この iPhone から送った操作：" + log.slice(0, 3).map(l => l.cmd).join("、")) : null,
     el("div", { style: "margin-top:10px;display:flex;gap:8px;flex-wrap:wrap" },
-      el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_intraday.yml"); toast("急変チェックを始めました（急変があれば Discord に届きます）"); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "今すぐ急変チェック"))));
+      el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_intraday.yml"); toast("急変チェックを始めました（急変があれば Discord に届きます）"); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "今すぐ急変チェック"),
+      el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_morning.yml"); toast("朝の通知をもう一度送ります（1〜2分で Discord に届きます。休場日は届きません）", 5000); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "朝の通知をもう一度"))));
 
+  // 改修記録（直近3回分）
+  const logs = parseLog(logText);
+  if (logs.length) app.append(el("section", {}, el("details", {},
+    el("summary", { style: "font-size:15px;font-weight:600;color:var(--sub)" }, `📝 改修記録（最新 ${logs[0].ver}・${logs[0].date}）`),
+    logs.map(g => el("div", { style: "margin-top:10px" }, el("div", { class: "name" }, `${g.ver}（${g.date}）`),
+      el("ul", { class: "small", style: "margin:4px 0 0;padding-left:18px" }, g.items.map(t => el("li", {}, t.replaceAll("`", "")))))))));
+
+  // バージョン：この画面と、クラウドで動いているプログラム
+  if (s.app_version && newer(s.app_version, APP_VERSION)) app.append(el("div", { class: "note" },
+    `新しい画面（v${s.app_version}）があります。この画面は v${APP_VERSION} です。app/index.html を kabuwatch-app へアップロードしてください。`));
   app.append(el("div", { class: "small", style: "margin:16px 2px" }, "※指標に基づく目安です。注文は証券会社のアプリで行い、最終判断はご自身で。"));
+  app.append(el("div", { class: "small", id: "ver", style: "margin:4px 2px 16px" },
+    `KabuWatch　画面 v${APP_VERSION} ／ プログラム ${s.version ? "v" + s.version : "（次の引け後レポートから表示）"}`));
 }
 
 async function load() {
   if (!cfg.token) { $("#app").replaceChildren(section("ようこそ", el("div", {}, "右上の ⚙ から GitHub のトークンを設定してください。"))); openSetup(); return; }
   $("#reload").disabled = true;
   try {
-    const [s, opt, runs] = await Promise.all([readJson("data/state.json"), readJson("data/params.json"),
+    const [s, opt, logText, hol, runs] = await Promise.all([readJson("data/state.json"), readJson("data/params.json"), readText("CHANGELOG.md"),
+      readJson("data/holidays.json").catch(() => null),   // 無くても土日・年末年始だけで動く
       gh(`/repos/${cfg.repo}/actions/runs?per_page=6`).then(j => j.workflow_runs).catch(() => [])]);
-    render(s || {}, opt, runs);
+    HOL = new Set(hol?.days || []);
+    render(s || {}, opt, runs, logText);
   } catch (e) {
     $("#app").replaceChildren(section("読み込めませんでした", el("div", {}, e.message)));
   } finally { $("#reload").disabled = false; }
