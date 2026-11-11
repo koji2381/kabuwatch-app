@@ -88,7 +88,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
-const APP_VERSION = "1.7.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
+const APP_VERSION = "1.8.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -231,6 +231,50 @@ function nextTrading(d) { do { d = addDays(d, 1); } while (closedReason(d)); ret
 function lastTrading(d) { while (closedReason(d)) d = addDays(d, -1); return d; }
 const pct = (a, b) => `${a >= b ? "+" : ""}${((a / b - 1) * 100).toFixed(0)}%`;
 
+// ---- 自動起動（アプリを開いている間だけ）--------------------------------------------------
+// GitHub の定時実行は何時間も遅れるので、時刻になっても動いていなければ、この画面から実行ボタンを押す。
+// iPhone はアプリを閉じている間は何も動かせないため、開いている間・開いた瞬間だけ働く（閉じている間は PC が押す）。
+let LAST = { s: null, runs: [] };
+const autoOn = () => store.get("kw_auto", "1") === "1";
+const firedAt = () => { try { return JSON.parse(store.get("kw_fired", "{}")); } catch { return {}; } };
+function dueTriggers(s, runs, now) {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const hm = now.getHours() * 60 + now.getMinutes(), f = firedAt(), trading = !closedReason(today), out = [];
+  const lastAt = (file, key) => {   // その処理が最後に起動された時刻（クラウドの記録と、この端末が押した記録の新しい方）
+    const r = runs.find(x => (x.path || "").endsWith("/" + file));
+    return Math.max(r ? Date.parse(r.created_at) : 0, f[key] || 0);
+  };
+  const minsSince = (file, key) => (now - lastAt(file, key)) / 60000;
+  // 引け後レポート：出ているはずの日足（17:50以降は今日、それまでは前の取引日）がまだ無い
+  const expect = lastTrading(trading && hm >= 17 * 60 + 50 ? today : addDays(today, -1));
+  const stale = !!(s && s.last_bar && day(s.last_bar) < expect);
+  if (stale && minsSince("kabu_watch.yml", "daily") >= 45) out.push({ key: "daily", file: "kabu_watch.yml", inputs: { command: "auto" }, label: "引け後レポート" });
+  // 朝の通知：取引日の6〜9時に、今日まだ起動されていない（引け後を起動した直後は、その結果を待つ）
+  const six = today.getTime() + 6 * 3600000;
+  if (trading && hm >= 6 * 60 && hm < 9 * 60 && lastAt("kabu_watch_morning.yml", "morning") < six
+      && !(stale && minsSince("kabu_watch.yml", "daily") < 8) && !out.length)
+    out.push({ key: "morning", file: "kabu_watch_morning.yml", label: "朝の通知" });
+  // 場中の急変チェック：9:05〜15:35 に、10分以上あいていたら
+  if (trading && hm >= 9 * 60 + 5 && hm <= 15 * 60 + 35 && minsSince("kabu_watch_intraday.yml", "intraday") >= 10)
+    out.push({ key: "intraday", file: "kabu_watch_intraday.yml", label: "場中の急変チェック" });
+  return out;
+}
+async function autoTick() {
+  if (!autoOn() || !cfg.token || document.hidden || autoTick.busy || !LAST.s) return;
+  autoTick.busy = true;
+  try {
+    for (const d of dueTriggers(LAST.s, LAST.runs, new Date())) {
+      await dispatch(d.file, d.inputs);
+      const f = firedAt(); f[d.key] = Date.now(); store.set("kw_fired", JSON.stringify(f));
+      const t = new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+      const lg = JSON.parse(store.get("kw_auto_log", "[]")); lg.unshift(`${md(new Date())} ${t} ${d.label}`); store.set("kw_auto_log", JSON.stringify(lg.slice(0, 8)));
+      toast(`自動起動：${d.label}（数分で Discord に届きます）`, 5000);
+      setTimeout(load, 90000);
+    }
+  } catch (e) { toast("自動起動に失敗しました：" + e.message, 6000); } finally { autoTick.busy = false; }
+}
+setInterval(autoTick, 60000);
+
 function section(title, ...kids) { return el("section", {}, el("h2", {}, title), ...kids); }
 
 function render(s, opt, runs, logText) {
@@ -249,7 +293,7 @@ function render(s, opt, runs, logText) {
   if (plan.market) status.push(el("div", { style: "margin-top:6px" }, plan.market));
   status.push(el("div", { class: "small", style: "margin-top:6px" }, `最新の日足：${s.last_bar || "まだありません"}`));
   app.append(el("section", {}, ...status));
-  // 引け後の処理（17:47ごろ）が済んでいるはずの日足より古ければ知らせる
+  // 引け後の処理（17:50に起動）が済んでいるはずの日足より古ければ知らせる
   const expect = lastTrading(now.getHours() >= 19 && !why ? today : addDays(today, -1));
   if (s.last_bar && day(s.last_bar) < expect) app.append(el("div", { class: "note" },
     `最新の日足が ${md(day(s.last_bar))} のままです（${md(expect)} の分が届いていません）。下の「クラウドの実行状況」を確認してください。`));
@@ -331,11 +375,23 @@ function render(s, opt, runs, logText) {
   const log = JSON.parse(store.get("kw_log", "[]"));
   const st = r => r.status !== "completed" ? "⏳ 実行中" : (r.conclusion === "success" ? "✅ 完了" : "❌ 失敗");
   app.append(section("⚙️ クラウドの実行状況",
-    runs.length ? runs.map(r => el("div", { class: "row" }, el("div", { class: "grow" },
+    runs.length ? runs.slice(0, 6).map(r => el("div", { class: "row" }, el("div", { class: "grow" },
       el("div", {}, `${st(r)}　${r.name.replace("kabu_watch ", "")}`),
       el("div", { class: "small" }, new Date(r.created_at).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }))),
       el("a", { href: r.html_url, target: "_blank", rel: "noopener" }, "詳細"))) : el("div", { class: "empty" }, "まだありません"),
     log.length ? el("div", { class: "small", style: "margin-top:8px" }, "この iPhone から送った操作：" + log.slice(0, 3).map(l => l.cmd).join("、")) : null,
+    (() => {   // 自動起動の切り替え
+      const box = el("input", { type: "checkbox", id: "autoBox", style: "width:22px;height:22px;flex:none" });
+      box.checked = autoOn();
+      box.addEventListener("change", () => { store.set("kw_auto", box.checked ? "1" : "0"); toast(box.checked ? "自動起動をオンにしました" : "自動起動をオフにしました"); if (box.checked) autoTick(); });
+      const alog = JSON.parse(store.get("kw_auto_log", "[]"));
+      return el("div", { class: "info" },
+        el("label", { for: "autoBox", style: "display:flex;gap:10px;align-items:center;margin:0;font-size:15px;color:var(--ink)" }, box,
+          el("span", {}, "この画面を開いている間、時刻になったら自動で起動する")),
+        el("div", { class: "small", style: "margin-top:6px" }, "朝の通知（6〜9時）・引け後レポート（17:50以降、まだ出ていないとき）・場中の急変チェック（10分ごと）。" +
+          "iPhone の制限で、画面を閉じている間は起動できません（その間は PC が起動します）。"),
+        alog.length ? el("div", { class: "small", style: "margin-top:6px" }, "自動起動の記録：" + alog.slice(0, 3).join("、")) : null);
+    })(),
     el("div", { style: "margin-top:10px;display:flex;gap:8px;flex-wrap:wrap" },
       el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_intraday.yml"); toast("急変チェックを始めました（急変があれば Discord に届きます）"); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "今すぐ急変チェック"),
       el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch.yml", { command: "auto" }); toast("引け後レポートを始めました（数分で Discord に届きます。新しい日足が無ければ何も届きません）", 6000); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "引け後レポートを今すぐ"),
@@ -362,9 +418,11 @@ async function load() {
   try {
     const [s, opt, logText, hol, runs] = await Promise.all([readJson("data/state.json"), readJson("data/params.json"), readText("CHANGELOG.md"),
       readJson("data/holidays.json").catch(() => null),   // 無くても土日・年末年始だけで動く
-      gh(`/repos/${cfg.repo}/actions/runs?per_page=6`).then(j => j.workflow_runs).catch(() => [])]);
+      gh(`/repos/${cfg.repo}/actions/runs?per_page=30`).then(j => j.workflow_runs).catch(() => [])]);
     HOL = new Set(hol?.days || []);
     render(s || {}, opt, runs, logText);
+    LAST = { s: s || {}, runs };
+    autoTick();
   } catch (e) {
     $("#app").replaceChildren(section("読み込めませんでした", el("div", {}, e.message)));
   } finally { $("#reload").disabled = false; }
