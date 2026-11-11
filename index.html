@@ -88,7 +88,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
-const APP_VERSION = "1.8.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
+const APP_VERSION = "1.9.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -297,6 +297,26 @@ function render(s, opt, runs, logText) {
   const expect = lastTrading(now.getHours() >= 19 && !why ? today : addDays(today, -1));
   if (s.last_bar && day(s.last_bar) < expect) app.append(el("div", { class: "note" },
     `最新の日足が ${md(day(s.last_bar))} のままです（${md(expect)} の分が届いていません）。下の「クラウドの実行状況」を確認してください。`));
+  // 今日の注文：証券会社のアプリで入れる・確かめる・取消すものを1か所にまとめる
+  {
+    const todo = [], hold0 = Object.entries(s.holdings || {}), sug0 = Object.entries(s.suggest || {}).filter(([c]) => !(s.holdings || {})[c]);
+    const half0 = h => Math.floor(h.shares / 2 / 100) * 100, hm0 = (opt?.params?.exit_mode || "half_trail") === "half_trail";
+    for (const [c, h] of hold0) {
+      if (h.exit_next) todo.push(["売", `${c} ${h.name || ""}：寄付で成行売り（全${h.shares.toLocaleString()}株・${h.exit_next}）`]);
+      else {
+        if (!h.half_done) todo.push(["利確", `${c} ${h.name || ""}：指値 ${yen(h.target)}（${hm0 && half0(h) ? half0(h).toLocaleString() + "株＝半分" : "全株"}）`]);
+        todo.push(["逆指値", `${c} ${h.name || ""}：${yen(h.stop)}（全${h.shares.toLocaleString()}株）`]);
+      }
+    }
+    if (!(plan.blocks || []).length) for (const [c, x] of sug0) todo.push(["買", `${c} ${x.name || ""}：指値 ${yen(x.entry)} × ${x.qty.toLocaleString()}株（これより高くは買わない）`]);
+    for (const x of s.cancel || []) todo.push(["取消", `${x.code} ${x.name || ""}：前回の買い指値 ${yen(x.entry)} が残っていれば取消`]);
+    const color = { 買: "var(--acc)", 売: "var(--red)", 逆指値: "var(--red)", 利確: "var(--green)", 取消: "var(--sub)" };
+    app.append(section(`📝 ${orderDay ? md(orderDay) + " の注文" : "注文"}（証券会社のアプリで）`,
+      todo.length ? todo.map(([k, t]) => el("div", { class: "row", style: "padding:8px 0" },
+        el("span", { class: "chip", style: `margin:0;min-width:52px;text-align:center;color:${color[k]};border:1px solid ${color[k]};background:transparent` }, k),
+        el("div", { class: "grow", style: "font-size:15px" }, t)))
+      : el("div", { class: "empty" }, "入れる注文はありません（買い候補なし・保有なし）")));
+  }
   if (opt && !opt.trade_ok) app.append(el("div", { class: "note" }, "自動検証で今のルールは成績がマイナスです。買い候補は参考表示のみです（実際の購入は見送り推奨）。"));
 
   const pnlSpan = n => el("span", { class: n >= 0 ? "up" : "dn" }, `${n >= 0 ? "+" : ""}${Math.round(n).toLocaleString()}円`);
