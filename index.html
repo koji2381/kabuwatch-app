@@ -88,7 +88,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
-const APP_VERSION = "1.9.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
+const APP_VERSION = "1.10.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -310,11 +310,12 @@ function render(s, opt, runs, logText) {
     }
     if (!(plan.blocks || []).length) for (const [c, x] of sug0) todo.push(["買", `${c} ${x.name || ""}：指値 ${yen(x.entry)} × ${x.qty.toLocaleString()}株（これより高くは買わない）`]);
     for (const x of s.cancel || []) todo.push(["取消", `${x.code} ${x.name || ""}：前回の買い指値 ${yen(x.entry)} が残っていれば取消`]);
-    const color = { 買: "var(--acc)", 売: "var(--red)", 逆指値: "var(--red)", 利確: "var(--green)", 取消: "var(--sub)" };
+    if (Array.isArray(s.orders)) { todo.length = 0; for (const o of s.orders) todo.push([o.tag, o.text, o.note]); }   // v1.10.0〜：SBI証券の注文種別に合わせた一覧
+    const color = { 買: "var(--acc)", IFDOCO: "var(--acc)", IFD: "var(--acc)", OCO: "var(--green)", 売: "var(--red)", 逆指値: "var(--red)", 利確: "var(--green)", 取消: "var(--sub)" };
     app.append(section(`📝 ${orderDay ? md(orderDay) + " の注文" : "注文"}（証券会社のアプリで）`,
-      todo.length ? todo.map(([k, t]) => el("div", { class: "row", style: "padding:8px 0" },
-        el("span", { class: "chip", style: `margin:0;min-width:52px;text-align:center;color:${color[k]};border:1px solid ${color[k]};background:transparent` }, k),
-        el("div", { class: "grow", style: "font-size:15px" }, t)))
+      todo.length ? todo.map(([k, t, n]) => el("div", { class: "row", style: "padding:8px 0;align-items:flex-start" },
+        el("span", { class: "chip", style: `margin:2px 0 0;min-width:64px;text-align:center;color:${color[k] || "var(--sub)"};border:1px solid ${color[k] || "var(--sub)"};background:transparent` }, k),
+        el("div", { class: "grow", style: "font-size:15px" }, t, n ? el("div", { class: "small" }, n) : null)))
       : el("div", { class: "empty" }, "入れる注文はありません（買い候補なし・保有なし）")));
   }
   if (opt && !opt.trade_ok) app.append(el("div", { class: "note" }, "自動検証で今のルールは成績がマイナスです。買い候補は参考表示のみです（実際の購入は見送り推奨）。"));
