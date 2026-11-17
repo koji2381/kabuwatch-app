@@ -49,6 +49,12 @@ label{display:block;font-size:13px;color:var(--sub);margin:10px 0 4px}
 .kv{display:flex;justify-content:space-between;gap:10px;padding:3px 0;font-size:14px}
 .kv span:first-child{color:var(--sub)}
 .big{font-size:17px;font-weight:700}
+.tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:6px;margin:0 -2px}
+.tabs button{flex:none;min-height:34px;padding:4px 12px;font-size:14px;border-radius:99px}
+.tabs button.on{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:600}
+.hitem{padding:9px 0;border-top:1px solid var(--line)}
+.hitem:first-of-type{border-top:0}
+.htext{white-space:pre-wrap;font-size:13px;line-height:1.6;background:var(--bg);border-radius:10px;padding:10px;margin-top:6px;overflow-wrap:anywhere}
 .chip{display:inline-block;font-size:12px;padding:1px 8px;border-radius:99px;background:var(--chip);color:var(--sub);margin-left:4px}
 dialog{border:0;border-radius:16px;padding:18px;width:min(92vw,420px);background:var(--card);color:var(--ink)}
 dialog::backdrop{background:rgba(0,0,0,.45)}
@@ -88,7 +94,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
-const APP_VERSION = "1.10.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
+const APP_VERSION = "1.11.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -275,6 +281,91 @@ async function autoTick() {
 }
 setInterval(autoTick, 60000);
 
+// ---- これまでの履歴 -------------------------------------------------------------------
+let HIST = [];
+const plain = t => String(t || "").replace(/\*\*/g, "").replaceAll("`", "");
+const pnlTxt = n => `${n >= 0 ? "+" : ""}${Math.round(n).toLocaleString()}円`;
+function historySection(s, logText) {
+  const archived = s.archive || [];
+  const paper = [...archived.flatMap(a => a.paper?.closed || []), ...(s.paper?.closed || [])];
+  const cohorts = [...archived.flatMap(a => a.cohorts || []), ...(s.cohorts || [])];
+  const days = Object.entries(s.days || {});
+  const logs = parseLog(logText, 999);
+  const tabs = [
+    ["notice", `通知（${HIST.length}）`], ["trade", `実際の売買（${(s.sold || []).length}）`], ["paper", `仮想売買（${paper.length}）`],
+    ["days", `毎日の判断（${days.length}）`], ["picks", `ねらい目（${cohorts.length}週）`], ["log", `改修記録（${logs.length}）`]];
+  let tab = store.get("kw_htab", "notice"), kind = store.get("kw_hkind", "すべて"), limit = 30;
+  if (!tabs.some(t => t[0] === tab)) tab = "notice";
+  const box = el("div"), bar = el("div", { class: "tabs" });
+  const empty = t => el("div", { class: "empty" }, t);
+  const item = (head, sub, body) => el("div", { class: "hitem" }, el("div", {}, head), sub ? el("div", { class: "small" }, sub) : null, body || null);
+  function more(total) {
+    return total > limit ? el("button", { style: "margin-top:8px", onclick: () => { limit += 30; draw(); } }, `もっと見る（残り${total - limit}件）`) : null;
+  }
+  function draw() {
+    bar.replaceChildren(...tabs.map(([k, label]) => el("button", { class: k === tab ? "on" : "",
+      onclick: () => { tab = k; limit = 30; store.set("kw_htab", k); draw(); } }, label)));
+    const out = [];
+    if (tab === "notice") {
+      const kinds = ["すべて", ...new Set(HIST.map(h => h.kind))];
+      if (!kinds.includes(kind)) kind = "すべて";
+      out.push(el("div", { class: "tabs", style: "margin-top:2px" }, kinds.map(k => el("button", { class: k === kind ? "on" : "",
+        style: "font-size:12px;min-height:28px", onclick: () => { kind = k; limit = 30; store.set("kw_hkind", k); draw(); } }, k))));
+      const list = HIST.filter(h => kind === "すべて" || h.kind === kind).slice().reverse();
+      if (!list.length) out.push(empty("まだ通知の履歴はありません（v1.11.0 から、送った通知をここに残します）"));
+      for (const h of list.slice(0, limit)) {
+        const lines = plain(h.text).split("\n");
+        out.push(el("div", { class: "hitem" }, el("details", {},
+          el("summary", { style: "cursor:pointer" }, el("span", { class: "chip", style: "margin:0 6px 0 0" }, h.kind),
+            el("span", { class: "small" }, h.at), el("div", { style: "font-size:14px;margin-top:2px" }, lines[0].slice(0, 60))),
+          el("div", { class: "htext" }, lines.join("\n")))));
+      }
+      out.push(more(list.length));
+    } else if (tab === "trade") {
+      const list = (s.sold || []).slice().reverse();
+      if (!list.length) out.push(empty("まだ実際の売買の記録はありません（「買った」「売った」を記録すると、ここに残ります）"));
+      const sum = list.reduce((t, x) => t + (x.pnl || 0), 0);
+      if (list.length) out.push(el("div", { class: "kv" }, el("span", {}, `合計（${list.length}回）`), el("span", { class: sum >= 0 ? "up" : "dn" }, pnlTxt(sum))));
+      for (const x of list.slice(0, limit))
+        out.push(item(el("span", {}, `${x.code}　${yen(x.buy)} → ${yen(x.sell)} × ${(x.qty || 0).toLocaleString()}株　`,
+          el("span", { class: x.pnl >= 0 ? "up" : "dn" }, `${pnlTxt(x.pnl)}（${x.ret_pct >= 0 ? "+" : ""}${x.ret_pct}%）`)),
+          `${x.date} 売却${x.final ? "（全株）" : "（一部）"}`));
+      out.push(more(list.length));
+    } else if (tab === "paper") {
+      const list = paper.slice().reverse();
+      if (!list.length) out.push(empty("まだ決済した仮想売買はありません（評価用に、通知どおり売買したと仮定した記録です）"));
+      for (const x of list.slice(0, limit))
+        out.push(item(el("span", {}, `${x.code}　`, el("span", { class: x.pnl >= 0 ? "up" : "dn" }, `${pnlTxt(x.pnl)}（${x.ret_pct >= 0 ? "+" : ""}${x.ret_pct}%）`)),
+          `${x.buy_date} 買い → ${x.sell_date} 売り　${x.reason || ""}`));
+      out.push(more(list.length));
+    } else if (tab === "days") {
+      const list = days.slice().reverse();
+      if (!list.length) out.push(empty("まだ記録がありません"));
+      for (const [d, v] of list.slice(0, limit)) {
+        const buy = (v.buy || []).length ? `買い候補 ${v.buy.join("・")}` : "買い候補なし";
+        out.push(item(el("span", {}, `${md(day(d))}　`, v.b ? el("span", { class: "dn" }, "🔕 新規の買いは見送り") : el("span", { class: "up" }, buy)),
+          `シグナル ${v.sig}銘柄` + ((v.why || []).length ? `・理由：${v.why.join("・")}` : "") + (v.hold != null ? `・保有 ${v.hold}銘柄` : "")));
+      }
+      out.push(more(list.length));
+    } else if (tab === "picks") {
+      const list = cohorts.slice().reverse();
+      if (!list.length) out.push(empty("まだ記録がありません"));
+      for (const c of list.slice(0, limit))
+        out.push(item(el("b", {}, `${md(day(c.start))} からの週`),
+          c.picks.length ? c.picks.map(x => `${x.code} ${x.name}（${yen(x.price)}・${x.trend}）`).join("、") : "該当なし（条件を満たす銘柄がなかった週）"));
+      out.push(more(list.length));
+    } else if (tab === "log") {
+      for (const g of logs.slice(0, limit))
+        out.push(el("div", { class: "hitem" }, el("div", { class: "name" }, `${g.ver}（${g.date}）`),
+          el("ul", { class: "small", style: "margin:4px 0 0;padding-left:18px" }, g.items.map(t => el("li", {}, plain(t))))));
+      out.push(more(logs.length));
+    }
+    box.replaceChildren(...out.filter(Boolean));
+  }
+  draw();
+  return section("📜 これまでの履歴", bar, box);
+}
+
 function section(title, ...kids) { return el("section", {}, el("h2", {}, title), ...kids); }
 
 function render(s, opt, runs, logText) {
@@ -418,12 +509,8 @@ function render(s, opt, runs, logText) {
       el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch.yml", { command: "auto" }); toast("引け後レポートを始めました（数分で Discord に届きます。新しい日足が無ければ何も届きません）", 6000); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "引け後レポートを今すぐ"),
       el("button", { onclick: async e => { e.target.disabled = true; try { await dispatch("kabu_watch_morning.yml"); toast("朝の通知を起動しました（6〜9時に、その日1回だけ届きます。休場日は届きません）", 5000); } catch (er) { toast(er.message, 6000); } e.target.disabled = false; } }, "朝の通知を起動"))));
 
-  // 改修記録（直近3回分）
-  const logs = parseLog(logText);
-  if (logs.length) app.append(el("section", {}, el("details", {},
-    el("summary", { style: "font-size:15px;font-weight:600;color:var(--sub)" }, `📝 改修記録（最新 ${logs[0].ver}・${logs[0].date}）`),
-    logs.map(g => el("div", { style: "margin-top:10px" }, el("div", { class: "name" }, `${g.ver}（${g.date}）`),
-      el("ul", { class: "small", style: "margin:4px 0 0;padding-left:18px" }, g.items.map(t => el("li", {}, t.replaceAll("`", "")))))))));
+  // これまでの履歴（通知・売買・仮想売買・毎日の判断・ねらい目・改修記録）
+  app.append(historySection(s, logText));
 
   // バージョン：この画面と、クラウドで動いているプログラム
   if (s.app_version && newer(s.app_version, APP_VERSION)) app.append(el("div", { class: "note" },
@@ -437,8 +524,9 @@ async function load() {
   if (!cfg.token) { $("#app").replaceChildren(section("ようこそ", el("div", {}, "右上の ⚙ から GitHub のトークンを設定してください。"))); openSetup(); return; }
   $("#reload").disabled = true;
   try {
-    const [s, opt, logText, hol, runs] = await Promise.all([readJson("data/state.json"), readJson("data/params.json"), readText("CHANGELOG.md"),
+    const [s, opt, logText, hol, , runs] = await Promise.all([readJson("data/state.json"), readJson("data/params.json"), readText("CHANGELOG.md"),
       readJson("data/holidays.json").catch(() => null),   // 無くても土日・年末年始だけで動く
+      readJson("data/history.json").catch(() => null).then(h => { HIST = Array.isArray(h) ? h : []; }),
       gh(`/repos/${cfg.repo}/actions/runs?per_page=30`).then(j => j.workflow_runs).catch(() => [])]);
     HOL = new Set(hol?.days || []);
     render(s || {}, opt, runs, logText);
