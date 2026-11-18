@@ -94,7 +94,7 @@ a{color:var(--acc)}
 <div id="toast" role="status"></div>
 
 <script>
-const APP_VERSION = "1.11.0";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
+const APP_VERSION = "1.11.1";   // この画面の版。変えたら kabu_watch/__init__.py の APP_VERSION と CHANGELOG.md も合わせる
 const $ = s => document.querySelector(s);
 const API = "https://api.github.com";
 const store = {
@@ -485,7 +485,9 @@ function render(s, opt, runs, logText) {
 
   // 操作と実行状況
   const log = JSON.parse(store.get("kw_log", "[]"));
-  const st = r => r.status !== "completed" ? "⏳ 実行中" : (r.conclusion === "success" ? "✅ 完了" : "❌ 失敗");
+  // 取り消し（cancelled）は失敗ではない：2台の PC や iPhone が同時に起動し、重複した方をクラウドが止めたもの
+  const st = r => r.status !== "completed" ? "⏳ 実行中" : r.conclusion === "success" ? "✅ 完了"
+    : r.conclusion === "cancelled" || r.conclusion === "skipped" ? "⏭ 重複のため取り消し（問題なし）" : "❌ 失敗";
   app.append(section("⚙️ クラウドの実行状況",
     runs.length ? runs.slice(0, 6).map(r => el("div", { class: "row" }, el("div", { class: "grow" },
       el("div", {}, `${st(r)}　${r.name.replace("kabu_watch ", "")}`),
